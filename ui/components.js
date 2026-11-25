@@ -592,6 +592,8 @@ export default function App({ conv, session, onCommand, onExit, getSession }) {
 		conv.open().then(() => {
 			if (typeof conv.startHistorySync === "function") conv.startHistorySync();
 		}).catch((error) => {
+			// SDK: the entry point (bin/interactive.js) owns fatal reporting and exits; avoid a second message.
+			if (conv.client?.sdk) return;
 			setSnapshot((s) => ({ ...s, notice: `连接失败：${error.message}` }));
 		});
 		return () => conv.close();
@@ -944,10 +946,10 @@ export default function App({ conv, session, onCommand, onExit, getSession }) {
 			snapshot.messages.length === 0 && !(snapshot.streaming && snapshot.streaming.text)
 				? h(Box, { key: "empty", flexDirection: "column", marginTop: 1 },
 						h(Text, { dim: true }, "开始对话 — 直接输入并按 Enter 发送。"),
-						h(Text, { dim: true, color: "gray" }, "/ 命令 · @ 文件引用 · ! shell 命令 · i/a/o 输入 · ESC 回 normal · Ctrl+C 中断/双按退出 · ? 帮助"))
+						h(Text, { dim: true, color: "gray" }, conv.client?.sdk ? "/new /status /help /exit · @ ファイル参照 · ESC normal · 中断/履歴/一覧は未対応" : "/ 命令 · @ 文件引用 · ! shell 命令 · i/a/o 输入 · ESC 回 normal · Ctrl+C 中断/双按退出 · ? 帮助"))
 				: null
 		),
-		showHelp ? h(HelpPanel, {}) : null,
+		showHelp ? (conv.client?.sdk ? h(Text, {}, "SDK: Enter 送信 · /new /status /exit · Ctrl+C 空閑時に2回で終了 · 中断/履歴/一覧/権限操作は未対応") : h(HelpPanel, {})) : null,
 		snapshot.reconnecting
 			? h(Box, { borderStyle: "round", borderColor: "yellow" }, h(Text, { bold: true, color: "yellow" }, ` ⏳ 正在重连… ${snapshot.reconnecting.n}/${snapshot.reconnecting.max}`))
 			: null,
@@ -964,6 +966,10 @@ export default function App({ conv, session, onCommand, onExit, getSession }) {
 		h(SlashPanel, { panel: slashPanel }),
 		h(Notice, { notice: snapshot.notice }),
 		h(ErrorBanner, { error: snapshot.error }),
+		// SDK: the composer is live before the handshake; early input is sent once initialize completes.
+		conv.client?.sdk && !snapshot.connected && !snapshot.error
+			? h(Text, { key: "sdk-connecting", color: "yellow" }, "⏳ DSH SDK 接続中… 入力は受け付け、初期化完了後に送信します")
+			: null,
 		// HUD 放在输入框上方（贴近底部）——用户从最底部输入，HUD 常驻可见
 		h(HUD, { hud }),
 		h(CommandInput, { vim })

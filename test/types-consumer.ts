@@ -41,11 +41,13 @@ import { countProjectDocs as cd, projectDocsLabel as pd } from "dsh-tui/docs";
 import { resolveVersion as rv } from "dsh-tui/version";
 import { detectIntent as di, parseLineRange as plr, buildMentionCandidates as bmc } from "dsh-tui/mention";
 
-// ---- DshClient：验证 request/respond（而非不存在的 call）----
+// ---- DshClient：SDK 仅支持 session/prompt 与 shutdown；respond 恒拒绝（Promise<never>）----
 async function clientUse(client: DshClient) {
-  const v: unknown = await client.request("session.list", {});
-  const r: { accepted: boolean } = await client.respond("rpc-1", { ok: true, value: {} });
-  return { v, r, base: client.baseUrl };
+  const v: { messageId: string } = await client.request("session/prompt", { sessionId: "s", contentBlocks: [{ type: "text", text: "hi" }] });
+  // @ts-expect-error legacy host methods are not part of the SDK request surface
+  await client.request("session.list", {});
+  const r: Promise<never> = client.respond("rpc-1", { ok: true, value: {} });
+  return { v, r, base: client.cwd };
 }
 
 // ---- fold / view ----

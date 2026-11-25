@@ -13,3 +13,5 @@ python_six_points.md
 # TTY/smoke 运行时产生的临时笔记
 dsh-tui-*.md
 six-points.md
+
+tmp/

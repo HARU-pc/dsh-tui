@@ -27,65 +27,43 @@ test("parseServerRequest：坏 JSON / 非 server-request → null（坏帧跳过
 	assert.equal(parseServerRequest(JSON.stringify({ type: "server-request", rpcId: "r" })), null); // 无 payload
 });
 
-function fakeWebSocket(messages, { errorMessage = null } = {}) {
-	// 与内建 WebSocket 同构的最小事件实现：支持 addEventListener(node 的 on-别名也可)。
-	return class FakeWS {
-		constructor(url) {
-			this.url = url;
-			this._listeners = {};
-			this._mq = []; // 待派发的消息
-			this.closed = false;
-			// 微任务：先让 frames() 挂上监听，再派发 open + messages + close
-			queueMicrotask(() => {
-				this._emit("open");
-				for (const data of messages) this._emit("message", { data });
-				if (errorMessage) this._emit("error", { message: errorMessage });
-				this._emit("close");
-				this.closed = true;
-			});
-		}
-		addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); }
-		removeEventListener(type, fn) { this._listeners[type] = (this._listeners[type] || []).filter((f) => f !== fn); }
-		_emit(type, data) { for (const fn of this._listeners[type] || []) fn(data ?? {}); }
-		close() { this.closed = true; }
-	};
-}
 
-const frameWithRpc = (rpcId, payload) => JSON.stringify({ type: "server-request", rpcId, method: "events.mux", payload });
-
-test("MuxStream.frames：WebSocket 逐消息 yield 信封（含 rpcId），跳过坏帧", async () => {
-	const payload1 = { type: "session/subscribed", sessionId: "s1", lastSeq: 3 };
-	const payload2 = { type: "stream/error", error: { code: "internal", message: "boom" } };
-	const FakeWS = fakeWebSocket([frameWithRpc("r1", payload1), "garbage-not-json", frameWithRpc("r2", payload2)]);
-	const stream = new MuxStream("http://127.0.0.1:3080", { WebSocketImpl: FakeWS });
-	const frames = [];
-	let opened = false;
-	for await (const f of stream.frames({ onOpen: () => { opened = true; } })) {
-		frames.push(f);
-	}
-	assert.equal(opened, true, "连接建立应回调 onOpen");
-	assert.equal(frames.length, 2, "坏帧跳过，仅 2 条有效");
-	assert.equal(frames[0].rpcId, "r1");
-	assert.equal(frames[0].payload.type, "session/subscribed");
-	assert.deepEqual(frames[0].payload, payload1);
-	assert.equal(frames[1].payload.type, "stream/error");
-});
-
-test("MuxStream.frames：WebSocket error → transport failure", async () => {
-	const FakeWS = fakeWebSocket([], { errorMessage: "connection refused" });
-	const stream = new MuxStream("http://127.0.0.1:3080", { WebSocketImpl: FakeWS });
-	await assert.rejects(async () => {
-		for await (const _ of stream.frames()) { /* noop */ }
-	}, /transport failure for events\.mux: connection refused/);
-});
-
-test("MuxStream.frames：signal abort 干净终止（不抛错，供 close 后正常退出）", async () => {
-	// 已 abort 的信号：应立刻干净结束，不抛错（close() 语义，非重连错误）。
-	const FakeWS = fakeWebSocket([frameWithRpc("r1", { type: "x" })]);
-	const stream = new MuxStream("http://127.0.0.1:3080", { WebSocketImpl: FakeWS });
+test("SDK stream maps notifications and removes subscriptions on abort", async () => {
+	const { EventEmitter } = await import("node:events");
+	const client = new EventEmitter();
+	client.sdk = true;
+	client.initialize = async () => {};
 	const ac = new AbortController();
+	const stream = new MuxStream(client);
+	const iterator = stream.frames({ signal: ac.signal });
+	const next = iterator.next();
+	client.emit("notification", "session.event", { sessionId: "s", event: { seq: 1 } });
+	assert.deepEqual((await next).value.payload, { type: "session/event", sessionId: "s", event: { seq: 1 } });
 	ac.abort();
-	const frames = [];
-	for await (const f of stream.frames({ signal: ac.signal })) frames.push(f);
-	assert.deepEqual(frames, [], "已 abort 应立即结束且不 yield");
+	assert.equal((await iterator.next()).done, true);
+	assert.equal(client.listenerCount("notification"), 0);
+});
+
+test("SDK stream drains queued frames then ends on client close; failure is thrown", async () => {
+	const { EventEmitter } = await import("node:events");
+	const client = new EventEmitter();
+	client.sdk = true;
+	client.initialize = async () => {};
+	const iterator = new MuxStream(client).frames();
+	const first = iterator.next();
+	await new Promise((r) => setImmediate(r));
+	client.emit("notification", "session.status", { sessionId: "s", status: "idle" });
+	client.emit("closed", { code: 0, signal: null });
+	assert.equal((await first).value.payload.type, "session/status");
+	assert.equal((await iterator.next()).done, true);
+	assert.equal(client.listenerCount("closed") + client.listenerCount("notification") + client.listenerCount("failure"), 0);
+
+	const failing = new EventEmitter();
+	failing.sdk = true;
+	failing.initialize = async () => {};
+	const it2 = new MuxStream(failing).frames();
+	const pending = it2.next();
+	await new Promise((r) => setImmediate(r));
+	failing.emit("failure", new Error("boom"));
+	await assert.rejects(pending, /boom/);
 });

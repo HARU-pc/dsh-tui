@@ -71,19 +71,30 @@ export class Session {
 
 // ---------- client ----------
 export class DshClient {
-  constructor(baseUrl?: string);
-  baseUrl: string;
-  request<T = unknown>(method: string, payload?: object): Promise<T>;
-  respond(rpcId: string, result: object): Promise<{ accepted: boolean; reason?: string }>;
+  constructor(options?: { cwd?: string; command?: string; provider?: string; model?: string; timeoutMs?: number; initializeTimeoutMs?: number; killGraceMs?: number; onDiagnostic?: (text: string) => void });
+  readonly sdk: true;
+  cwd: string;
+  /** Set once the SDK child has closed. */
+  closedInfo: { code: number | null; signal: string | null } | null;
+  initialize(): Promise<unknown>;
+  shutdown(): Promise<void>;
+  on(event: string, listener: (...args: any[]) => void): this;
+  off(event: string, listener: (...args: any[]) => void): this;
+  /** SDK supports only these methods; any other method rejects with code "sdk-unsupported". */
+  request(method: "session/prompt", payload: { sessionId: string; contentBlocks: Array<{ type: "text"; text: string }> }): Promise<{ messageId: string }>;
+  request(method: "shutdown"): Promise<void>;
+  /** Approval/question responses are unsupported in SDK mode: always rejects ("sdk-unsupported"). */
+  respond(rpcId?: string, result?: object): Promise<never>;
 }
 export function mintRpcId(): string;
 
 // ---------- stream ----------
 export class MuxStream {
-  constructor(baseUrl: string, opts?: { WebSocketImpl?: unknown });
-  frames(opts?: { signal?: AbortSignal }): AsyncGenerator<{ rpcId?: string; payload: unknown }>;
+  constructor(client: DshClient);
+  frames(opts?: { signal?: AbortSignal; onOpen?: () => void }): AsyncGenerator<{ rpcId?: string; payload: unknown }>;
 }
-export function respond(client: DshClient, rpcId: string, result: object): Promise<unknown>;
+/** Unsupported in SDK mode; always rejects (delegates to DshClient.respond). */
+export function respond(client: DshClient, rpcId: string, result: object): Promise<never>;
 export function extractSseData(line: string): string | null;
 export function parseServerRequest(data: string): unknown | null;
 
